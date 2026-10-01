@@ -1,0 +1,5 @@
+app.py
+*.pdf
+.venv/
+__pycache__/
+.env

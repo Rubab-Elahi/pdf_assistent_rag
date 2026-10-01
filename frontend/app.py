@@ -1,9 +1,24 @@
 import os
 import glob
 import shutil
+import sys
 import streamlit as st
-from ingest import ingest_pdf
-from rag import load_qa_chain, ask
+
+# Add project root and backend directory to sys.path
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
+BACKEND_DIR = os.path.join(PROJECT_ROOT, "backend")
+if BACKEND_DIR not in sys.path:
+    sys.path.insert(0, BACKEND_DIR)
+
+try:
+    from backend.ingest import ingest_pdf
+    from backend.rag import load_qa_chain, ask
+except ImportError:
+    from ingest import ingest_pdf
+    from rag import load_qa_chain, ask
 
 
 # Page configuration
@@ -15,9 +30,11 @@ st.set_page_config(
 
 
 def list_pdfs():
-    """Find all PDF files in the current working directory."""
-    pdf_paths = glob.glob(os.path.join(os.path.dirname(__file__), "*.pdf"))
-    pdf_names = [os.path.basename(p) for p in pdf_paths]
+    """Find all PDF files in backend and frontend directories."""
+    pdf_paths = glob.glob(os.path.join(BACKEND_DIR, "*.pdf")) + glob.glob(
+        os.path.join(os.path.dirname(__file__), "*.pdf")
+    )
+    pdf_names = sorted(list(set([os.path.basename(p) for p in pdf_paths])))
     return pdf_names
 
 
@@ -88,14 +105,16 @@ with left_col:
 
         # Priority 1: Uploaded file
         if uploaded_file is not None:
-            dest_path = os.path.join(os.path.dirname(__file__), uploaded_file.name)
+            dest_path = os.path.join(BACKEND_DIR, uploaded_file.name)
             with open(dest_path, "wb") as f:
                 f.write(uploaded_file.getbuffer())
             target_path = dest_path
 
         # Priority 2: Selected existing PDF
         elif selected_pdf and selected_pdf not in ["None", "No PDFs found"]:
-            target_path = os.path.join(os.path.dirname(__file__), selected_pdf)
+            target_path = os.path.join(BACKEND_DIR, selected_pdf)
+            if not os.path.exists(target_path):
+                target_path = os.path.join(os.path.dirname(__file__), selected_pdf)
 
         if not target_path or not os.path.exists(target_path):
             st.session_state.ingest_status = (
