@@ -12,7 +12,10 @@ from langchain_community.vectorstores import FAISS
 
 load_dotenv()
 
-VECTOR_STORE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "faiss_index")
+if os.getenv("VERCEL"):
+    VECTOR_STORE_PATH = "/tmp/faiss_index"
+else:
+    VECTOR_STORE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "faiss_index")
 EMBED_MODEL = "text-embedding-3-small"
 
 
