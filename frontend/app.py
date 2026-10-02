@@ -1,52 +1,16 @@
 import os
-import glob
-import shutil
-import sys
+import requests
 import streamlit as st
 
-# Add project root and backend directory to sys.path
-PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, PROJECT_ROOT)
+# Backend API URL 
+BACKEND_URL = os.getenv("BACKEND_URL", "https://pdf-assistent-rag.vercel.app")
 
-BACKEND_DIR = os.path.join(PROJECT_ROOT, "backend")
-if BACKEND_DIR not in sys.path:
-    sys.path.insert(0, BACKEND_DIR)
-
-try:
-    from backend.ingest import ingest_pdf
-    from backend.rag import load_qa_chain, ask
-except ImportError:
-    from ingest import ingest_pdf
-    from rag import load_qa_chain, ask
-
-
-# Page configuration
+# Page Configuration
 st.set_page_config(
     page_title="RAG PDF Assistant",
     page_icon="📚",
     layout="wide",
 )
-
-
-def list_pdfs():
-    """Find all PDF files in backend and frontend directories."""
-    pdf_paths = glob.glob(os.path.join(BACKEND_DIR, "*.pdf")) + glob.glob(
-        os.path.join(os.path.dirname(__file__), "*.pdf")
-    )
-    pdf_names = sorted(list(set([os.path.basename(p) for p in pdf_paths])))
-    return pdf_names
-
-
-def get_or_load_chain():
-    """Load or retrieve the active QA chain stored in session state."""
-    if "active_chain" not in st.session_state or st.session_state.active_chain is None:
-        try:
-            st.session_state.active_chain = load_qa_chain()
-        except Exception:
-            st.session_state.active_chain = None
-    return st.session_state.active_chain
-
 
 # Initialize Session States
 if "messages" not in st.session_state:
@@ -58,7 +22,58 @@ if "ingest_status" not in st.session_state:
     )
 
 
-# --- Custom CSS ---
+# --- Helper API Functions ---
+def query_rag_backend(question):
+    """Query the backend /ask endpoint."""
+    try:
+        res = requests.post(
+            f"{BACKEND_URL}/ask",
+            json={"question": question},
+            timeout=30,
+        )
+        if res.status_code == 200:
+            return res.json().get("answer", "⚠️ No answer returned from API.")
+        return f"❌ **Backend Error (HTTP {res.status_code}):** {res.text}"
+    except requests.exceptions.Timeout:
+        return "⏱️ **Request timed out.** Please try again."
+    except requests.exceptions.ConnectionError:
+        return f"🔌 **Could not reach backend:** `{BACKEND_URL}`"
+    except Exception as e:
+        return f"❌ **Error:** {str(e)}"
+
+
+
+def fetch_pdf_list():
+    """Fetch existing PDFs from backend /documents endpoint."""
+    try:
+        res = requests.get(f"{BACKEND_URL}/documents", timeout=10)
+        if res.status_code == 200:
+            return res.json().get("documents", [])
+    except Exception:
+        pass
+    return []
+
+
+def send_pdf_for_ingestion(uploaded_file):
+    """Upload a PDF file to backend /ingest endpoint."""
+    try:
+        files = {"file": (uploaded_file.name, uploaded_file.getvalue(), "application/pdf")}
+        res = requests.post(f"{BACKEND_URL}/ingest", files=files, timeout=60)
+        if res.status_code == 200:
+            return True, f"✅ **Successfully ingested `{uploaded_file.name}`!**\n\nVector index updated. You can now ask questions."
+        else:
+            try:
+                detail = res.json().get("detail", res.text)
+            except Exception:
+                detail = res.text
+            return False, f"❌ **Ingestion failed:** {detail}"
+    except requests.exceptions.ConnectionError:
+        return False, f"🔌 **Could not reach backend:** `{BACKEND_URL}`"
+    except Exception as e:
+        return False, f"❌ **Error:** {str(e)}"
+
+
+# --- Custom CSS & Header ---
 st.markdown(
     """
     <style>
@@ -70,7 +85,6 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# Header Section
 st.markdown(
     """
     <div class="header-box">
@@ -81,67 +95,38 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# Main Two-Column Layout
+# --- Layout ---
 left_col, right_col = st.columns([1, 2], gap="large")
 
-# --- Left Sidebar / Column: PDF Management & Ingestion ---
+# Left Column: Document Management
 with left_col:
     st.subheader("📄 Document Selection")
 
-    pdfs = list_pdfs()
+    pdf_list = fetch_pdf_list()
     selected_pdf = st.selectbox(
         "Select Existing PDF",
-        options=["None"] + pdfs if pdfs else ["No PDFs found"],
+        options=["None"] + pdf_list if pdf_list else ["No PDFs found"],
         index=0,
     )
 
-    uploaded_file = st.file_uploader(
-        "Or Upload New PDF",
-        type=["pdf"],
-    )
+    uploaded_file = st.file_uploader("Or Upload New PDF", type=["pdf"])
 
     if st.button("⚡ Ingest & Process PDF", use_container_width=True, type="primary"):
-        target_path = None
-
-        # Priority 1: Uploaded file
         if uploaded_file is not None:
-            dest_path = os.path.join(BACKEND_DIR, uploaded_file.name)
-            with open(dest_path, "wb") as f:
-                f.write(uploaded_file.getbuffer())
-            target_path = dest_path
-
-        # Priority 2: Selected existing PDF
-        elif selected_pdf and selected_pdf not in ["None", "No PDFs found"]:
-            target_path = os.path.join(BACKEND_DIR, selected_pdf)
-            if not os.path.exists(target_path):
-                target_path = os.path.join(os.path.dirname(__file__), selected_pdf)
-
-        if not target_path or not os.path.exists(target_path):
-            st.session_state.ingest_status = (
-                "⚠️ **Error:** Please select an existing PDF or upload a new PDF file first."
-            )
+            with st.spinner(f"Ingesting `{uploaded_file.name}` on backend..."):
+                success, message = send_pdf_for_ingestion(uploaded_file)
+                st.session_state.ingest_status = message
         else:
-            pdf_name = os.path.basename(target_path)
-            with st.spinner(f"Ingesting `{pdf_name}`..."):
-                try:
-                    ingest_pdf(target_path)
-                    st.session_state.active_chain = load_qa_chain()
-                    st.session_state.ingest_status = (
-                        f"✅ **Successfully ingested `{pdf_name}`!**\n\n"
-                        f"Vector index updated and ready for Q&A."
-                    )
-                    st.rerun()
-                except Exception as e:
-                    st.session_state.ingest_status = f"❌ **Ingestion failed:** {str(e)}"
+            st.session_state.ingest_status = "⚠️ Please upload a PDF file first."
 
     st.info(st.session_state.ingest_status)
+    st.caption(f"**Backend:** `{BACKEND_URL}`")
 
 
-# --- Right Column: Chat Interface ---
+# Right Column: Chat Interface
 with right_col:
     st.subheader("💬 Document Q&A Chat")
 
-    # Chat Header Controls
     ctrl_col1, ctrl_col2 = st.columns([1, 1])
     with ctrl_col1:
         if st.button("🗑️ Clear Chat", use_container_width=True):
@@ -151,39 +136,22 @@ with right_col:
         if st.button("🔄 Refresh PDF List", use_container_width=True):
             st.rerun()
 
-    # Chat message container
     chat_container = st.container(height=450)
 
-    # Render previous conversation history
     with chat_container:
         for msg in st.session_state.messages:
             with st.chat_message(msg["role"]):
                 st.markdown(msg["content"])
 
-    # Input box at the bottom of chat
     if user_message := st.chat_input("Type your question about the PDF document..."):
-        # Append and display user message
         st.session_state.messages.append({"role": "user", "content": user_message})
         with chat_container:
             with st.chat_message("user"):
                 st.markdown(user_message)
 
-        # Get active QA chain
-        chain = get_or_load_chain()
+        with st.spinner("Thinking..."):
+            bot_message = query_rag_backend(user_message)
 
-        # Generate bot response
-        if chain is None:
-            bot_message = (
-                "⚠️ **No document index found.** Please upload or select a PDF and click **Ingest & Process PDF** first."
-            )
-        else:
-            try:
-                with st.spinner("Thinking..."):
-                    bot_message = ask(user_message, chain)
-            except Exception as e:
-                bot_message = f"❌ **Error generating response:** {str(e)}"
-
-        # Append and display assistant response
         st.session_state.messages.append({"role": "assistant", "content": bot_message})
         with chat_container:
             with st.chat_message("assistant"):
