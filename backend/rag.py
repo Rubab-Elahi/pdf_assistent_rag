@@ -16,11 +16,19 @@ else:
     VECTOR_STORE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "faiss_index")
 EMBED_MODEL = "text-embedding-3-small"
 
-SYSTEM_PROMPT = """You are a helpful assistant that answers questions about a document.
-Use ONLY the context provided below to answer. Be detailed and informative.
-If the context does not contain the answer, say so clearly.
+SYSTEM_PROMPT = """You are an expert PDF guide — knowledgeable, warm, and direct.
 
-Context from document:
+Rules:
+- Use retrieved excerpts as primary source; fill gaps with training knowledge (label it *(general knowledge)*).
+- MANDATORY: Every sentence that uses information from the excerpts MUST end with the page number in bold, e.g. **[Page 12]**. This is not optional — if a response has no page citations it is considered incomplete.
+- Give rich, structured answers (bullets/headers). Include historical examples where relevant.
+- For follow-ups ("simplify this", "give an example"), stay locked on the current topic — don't drift.
+- For specific laws/sections, match exactly. If not in context, say so and use training knowledge.
+- Before responding, verify: "Does this answer exactly what was asked?"
+- No filler openers ("Great question!", "Based on the context…"). Jump straight to the answer.
+- End every response with an engaging follow-up question.
+
+Context excerpts from the document (EACH STARTS WITH ITS PAGE NUMBER — YOU MUST CITE IT):
 {context}"""
 
 
@@ -30,11 +38,11 @@ def load_qa_chain():
     vector_store = FAISS.load_local(
         VECTOR_STORE_PATH, embeddings, allow_dangerous_deserialization=True  #Allows Python’s pickle library to safely load local FAISS index files from disk.
     )
-    retriever = vector_store.as_retriever(search_kwargs={"k": 5})
+    retriever = vector_store.as_retriever(search_kwargs={"k": 8})
 
     llm = ChatOpenAI(
         model="gpt-4o",
-        temperature=0,
+        temperature=0.4,
         openai_api_key=os.getenv("OPENAI_API_KEY"),
     )
 
@@ -45,6 +53,17 @@ def load_qa_chain():
 
     return retriever, llm, prompt
 
+# Cache chain at module level — avoids reloading FAISS on every request
+_chain_cache = None
+
+
+def get_cached_chain():
+    """Return the cached QA chain, loading it once on first call."""
+    global _chain_cache
+    if _chain_cache is None:
+        _chain_cache = load_qa_chain()
+    return _chain_cache
+
 
 def ask(question: str, chain) -> str:
     """Retrieve relevant docs, then ask the LLM."""
@@ -52,7 +71,10 @@ def ask(question: str, chain) -> str:
 
     # Step 1: Retrieve relevant chunks
     docs = retriever.invoke(question)
-    context = "\n\n".join(doc.page_content for doc in docs)
+    context = "\n\n".join(
+        f"=== PAGE {doc.metadata.get('page', '?')} ===\n{doc.page_content}"
+        for doc in docs
+    )
 
     if not context.strip():
         return "⚠️ No relevant content found in the document for this question."

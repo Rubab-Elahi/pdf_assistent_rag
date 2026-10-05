@@ -8,7 +8,7 @@ import tempfile
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from rag import load_qa_chain, ask
+from rag import load_qa_chain, ask, get_cached_chain
 from ingest import ingest_pdf
 
 app = FastAPI(title="RAG PDF Assistant API")
@@ -38,8 +38,7 @@ def query_rag(req: QueryRequest):
         raise HTTPException(status_code=400, detail="Question cannot be empty.")
 
     try:
-        # Load chain fresh per request — safe for Vercel serverless cold starts
-        chain = load_qa_chain()
+        chain = get_cached_chain()
         answer = ask(req.question, chain)
         return {"answer": answer}
     except FileNotFoundError:
