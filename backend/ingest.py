@@ -12,7 +12,16 @@ from langchain_community.vectorstores import FAISS
 
 load_dotenv()
 
-VECTOR_STORE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "faiss_index")
+def get_vector_store_path():
+    """Return /tmp/faiss_index on Vercel/serverless environments, or local backend directory."""
+    if os.getenv("VERCEL") or os.environ.get("AWS_LAMBDA_FUNCTION_NAME"):
+        return "/tmp/faiss_index"
+    backend_dir = os.path.dirname(os.path.abspath(__file__))
+    if os.access(backend_dir, os.W_OK):
+        return os.path.join(backend_dir, "faiss_index")
+    return "/tmp/faiss_index"
+
+VECTOR_STORE_PATH = get_vector_store_path()
 EMBED_MODEL = "text-embedding-3-small"
 
 

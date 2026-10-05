@@ -8,7 +8,7 @@ import tempfile
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from rag import load_qa_chain, ask, get_cached_chain
+from rag import load_qa_chain, ask, get_cached_chain, clear_chain_cache
 from ingest import ingest_pdf
 
 app = FastAPI(title="RAG PDF Assistant API")
@@ -64,6 +64,7 @@ async def ingest_document(file: UploadFile = File(...)):
 
         ingest_pdf(tmp_path)
         os.unlink(tmp_path)  # Clean up temp file
+        clear_chain_cache()  # Reset chain cache to reload newly ingested vector store
         return {"message": f"Successfully ingested '{file.filename}'."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

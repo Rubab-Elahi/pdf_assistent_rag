@@ -10,10 +10,17 @@ from langchain_core.prompts import ChatPromptTemplate
 
 load_dotenv()
 
-if os.getenv("VERCEL"):
-    VECTOR_STORE_PATH = "/tmp/faiss_index"
-else:
-    VECTOR_STORE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "faiss_index")
+def get_vector_store_path():
+    """Return /tmp/faiss_index if it exists, otherwise return local bundled faiss_index."""
+    tmp_path = "/tmp/faiss_index"
+    bundled_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "faiss_index")
+    
+    if os.path.exists(tmp_path):
+        return tmp_path
+    if os.path.exists(bundled_path):
+        return bundled_path
+    return tmp_path
+
 EMBED_MODEL = "text-embedding-3-small"
 
 SYSTEM_PROMPT = """You are an expert PDF guide — knowledgeable, warm, and direct.
@@ -34,9 +41,10 @@ Context excerpts from the document (EACH STARTS WITH ITS PAGE NUMBER — YOU MUS
 
 def load_qa_chain():
     """Load vector store and LLM — returns (retriever, llm, prompt)."""
+    vector_store_path = get_vector_store_path()
     embeddings = OpenAIEmbeddings(model=EMBED_MODEL)
     vector_store = FAISS.load_local(
-        VECTOR_STORE_PATH, embeddings, allow_dangerous_deserialization=True  #Allows Python’s pickle library to safely load local FAISS index files from disk.
+        vector_store_path, embeddings, allow_dangerous_deserialization=True  #Allows Python’s pickle library to safely load local FAISS index files from disk.
     )
     retriever = vector_store.as_retriever(search_kwargs={"k": 8})
 
@@ -55,6 +63,12 @@ def load_qa_chain():
 
 # Cache chain at module level — avoids reloading FAISS on every request
 _chain_cache = None
+
+
+def clear_chain_cache():
+    """Clear the cached QA chain to force reloading FAISS index on next query."""
+    global _chain_cache
+    _chain_cache = None
 
 
 def get_cached_chain():
