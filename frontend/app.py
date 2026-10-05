@@ -102,7 +102,10 @@ left_col, right_col = st.columns([1, 2], gap="large")
 with left_col:
     st.subheader("📄 Document Selection")
 
-    pdf_list = fetch_pdf_list()
+    if "pdf_list" not in st.session_state:
+        st.session_state.pdf_list = []
+
+    pdf_list = st.session_state.pdf_list
     selected_pdf = st.selectbox(
         "Select Existing PDF",
         options=["None"] + pdf_list if pdf_list else ["No PDFs found"],
@@ -134,6 +137,7 @@ with right_col:
             st.rerun()
     with ctrl_col2:
         if st.button("🔄 Refresh PDF List", use_container_width=True):
+            st.session_state.pdf_list = fetch_pdf_list()
             st.rerun()
 
     chat_container = st.container(height=450)
