@@ -27,33 +27,28 @@ SYSTEM_PROMPT = """You are a strict, grounded PDF question-answering assistant.
 
 RULES YOU MUST FOLLOW STRICTLY:
 1. You MUST answer the user's question using ONLY the facts and details directly stated in the Context Excerpts below.
-2. If the answer to the question cannot be found within the provided Context Excerpts, respond strictly with: "The answer to this question is not available in the provided document."
-3. Do NOT use outside knowledge, general world memory, or assumptions under any circumstances.
-4. MANDATORY CITATIONS: For every answer derived from the context, include the page citation in bold, e.g., **[Page 5]**.
-5. Keep your response direct and clear without meta-introductions like "Based on the context...".
-6. End your response with a concise, relevant follow-up question based on the document.
+2. Read the Context Excerpts carefully. If the excerpts DO NOT contain the answer to the user's question, respond strictly with: "The answer to this question is not available in the provided document."
+3. You are FORBIDDEN from using any external knowledge, general world memory, training data, or outside assumptions.
+4. MANDATORY CITATIONS: Every piece of information you state MUST include its page number in bold, e.g., **[Page 5]**.
+5. Go straight to the answer without meta-introductions like "Based on the context...".
+6. End your response with a concise, relevant follow-up question based on the document content.
 
 Context Excerpts from the ingested document:
 {context}"""
 
 
-# Similarity distance threshold — FAISS uses squared L2 distance; lower = more similar.
-# Relevant chunks for OpenAI text-embedding-3-small typically fall between 0.70 and 1.25.
-# Completely unrelated questions have L2 distance > 1.35.
-SIMILARITY_THRESHOLD = 1.30
-
-
 def load_qa_chain():
-    """Load vector store and LLM — returns (vector_store, llm, prompt)."""
+    """Load vector store and LLM — returns (retriever, llm, prompt)."""
     vector_store_path = get_vector_store_path()
     embeddings = OpenAIEmbeddings(model=EMBED_MODEL)
     vector_store = FAISS.load_local(
         vector_store_path, embeddings, allow_dangerous_deserialization=True  # Allows Python's pickle library to safely load local FAISS index files from disk.
     )
+    retriever = vector_store.as_retriever(search_kwargs={"k": 8})
 
     llm = ChatOpenAI(
         model="gpt-4o",
-        temperature=0,  # Zero temperature for strict, deterministic answers
+        temperature=0,  # Zero temperature for strict, deterministic grounding
         openai_api_key=os.getenv("OPENAI_API_KEY"),
     )
 
@@ -62,7 +57,7 @@ def load_qa_chain():
         ("human", "{question}"),
     ])
 
-    return vector_store, llm, prompt
+    return retriever, llm, prompt
 
 # Cache chain at module level — avoids reloading FAISS on every request
 _chain_cache = None
@@ -83,27 +78,24 @@ def get_cached_chain():
 
 
 def ask(question: str, chain) -> str:
-    """Retrieve relevant docs with score filtering, then ask the LLM."""
-    vector_store, llm, prompt = chain
+    """Retrieve top-k relevant docs, then ask the LLM strictly using context."""
+    retriever, llm, prompt = chain
 
-    # Step 1: Retrieve top-k chunks with similarity scores (FAISS L2 distance)
-    docs_with_scores = vector_store.similarity_search_with_score(question, k=8)
+    # Step 1: Retrieve top-k chunks
+    docs = retriever.invoke(question)
 
-    # Step 2: Filter out chunks that are too dissimilar (high L2 distance = irrelevant)
-    relevant_docs = [
-        doc for doc, score in docs_with_scores
-        if score <= SIMILARITY_THRESHOLD
-    ]
-
-    if not relevant_docs:
+    if not docs:
         return "The answer to this question is not available in the provided document."
 
     context = "\n\n".join(
         f"=== PAGE {doc.metadata.get('page', '?')} ===\n{doc.page_content}"
-        for doc in relevant_docs
+        for doc in docs
     )
 
-    # Step 3: Ask LLM strictly using the filtered context
+    if not context.strip():
+        return "The answer to this question is not available in the provided document."
+
+    # Step 2: Ask LLM strictly using context
     messages = prompt.format_messages(context=context, question=question)
     response = llm.invoke(messages)
     return response.content
