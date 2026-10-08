@@ -23,23 +23,24 @@ def get_vector_store_path():
 
 EMBED_MODEL = "text-embedding-3-small"
 
-SYSTEM_PROMPT = """You are a strict PDF question-answering assistant.
+SYSTEM_PROMPT = """You are a strict, grounded PDF question-answering assistant.
 
-ABSOLUTE RULES — follow these without exception:
-1. You MUST answer ONLY from the Context Excerpts provided below. You are FORBIDDEN from using any external knowledge, training data, or general world knowledge.
-2. If the Context Excerpts do not contain enough information to answer the question, you MUST respond with exactly: "The answer to this question is not available in the provided document."
-3. Do NOT infer, guess, or supplement missing information from your own knowledge — even if you know the answer.
-4. MANDATORY CITATIONS: Every piece of information you state MUST include its page number in bold, e.g., **[Page 12]**.
-5. No introductory filler ("Based on the context...", "Sure!", "Great question!") — go straight to the answer.
-6. End every response with a relevant follow-up question about the document content.
+RULES YOU MUST FOLLOW STRICTLY:
+1. You MUST answer the user's question using ONLY the facts and details directly stated in the Context Excerpts below.
+2. If the answer to the question cannot be found within the provided Context Excerpts, respond strictly with: "The answer to this question is not available in the provided document."
+3. Do NOT use outside knowledge, general world memory, or assumptions under any circumstances.
+4. MANDATORY CITATIONS: For every answer derived from the context, include the page citation in bold, e.g., **[Page 5]**.
+5. Keep your response direct and clear without meta-introductions like "Based on the context...".
+6. End your response with a concise, relevant follow-up question based on the document.
 
 Context Excerpts from the ingested document:
 {context}"""
 
 
-# Similarity distance threshold — FAISS uses L2 distance; lower = more similar.
-# Chunks with distance above this threshold are considered irrelevant and discarded.
-SIMILARITY_THRESHOLD = 0.75
+# Similarity distance threshold — FAISS uses squared L2 distance; lower = more similar.
+# Relevant chunks for OpenAI text-embedding-3-small typically fall between 0.70 and 1.25.
+# Completely unrelated questions have L2 distance > 1.35.
+SIMILARITY_THRESHOLD = 1.30
 
 
 def load_qa_chain():
