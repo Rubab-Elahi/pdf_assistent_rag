@@ -23,34 +23,36 @@ def get_vector_store_path():
 
 EMBED_MODEL = "text-embedding-3-small"
 
-SYSTEM_PROMPT = """You are an expert PDF guide — knowledgeable, warm, and direct.
+SYSTEM_PROMPT = """You are a strict PDF question-answering assistant.
 
-Rules:
-- Use retrieved excerpts as primary source; fill gaps with training knowledge (label it *(general knowledge)*).
-- MANDATORY: Every sentence that uses information from the excerpts MUST end with the page number in bold, e.g. **[Page 12]**. This is not optional — if a response has no page citations it is considered incomplete.
-- Give rich, structured answers (bullets/headers). Include historical examples where relevant.
-- For follow-ups ("simplify this", "give an example"), stay locked on the current topic — don't drift.
-- For specific laws/sections, match exactly. If not in context, say so and use training knowledge.
-- Before responding, verify: "Does this answer exactly what was asked?"
-- No filler openers ("Great question!", "Based on the context…"). Jump straight to the answer.
-- End every response with an engaging follow-up question.
+ABSOLUTE RULES — follow these without exception:
+1. You MUST answer ONLY from the Context Excerpts provided below. You are FORBIDDEN from using any external knowledge, training data, or general world knowledge.
+2. If the Context Excerpts do not contain enough information to answer the question, you MUST respond with exactly: "The answer to this question is not available in the provided document."
+3. Do NOT infer, guess, or supplement missing information from your own knowledge — even if you know the answer.
+4. MANDATORY CITATIONS: Every piece of information you state MUST include its page number in bold, e.g., **[Page 12]**.
+5. No introductory filler ("Based on the context...", "Sure!", "Great question!") — go straight to the answer.
+6. End every response with a relevant follow-up question about the document content.
 
-Context excerpts from the document (EACH STARTS WITH ITS PAGE NUMBER — YOU MUST CITE IT):
+Context Excerpts from the ingested document:
 {context}"""
 
 
+# Similarity distance threshold — FAISS uses L2 distance; lower = more similar.
+# Chunks with distance above this threshold are considered irrelevant and discarded.
+SIMILARITY_THRESHOLD = 0.75
+
+
 def load_qa_chain():
-    """Load vector store and LLM — returns (retriever, llm, prompt)."""
+    """Load vector store and LLM — returns (vector_store, llm, prompt)."""
     vector_store_path = get_vector_store_path()
     embeddings = OpenAIEmbeddings(model=EMBED_MODEL)
     vector_store = FAISS.load_local(
-        vector_store_path, embeddings, allow_dangerous_deserialization=True  #Allows Python’s pickle library to safely load local FAISS index files from disk.
+        vector_store_path, embeddings, allow_dangerous_deserialization=True  # Allows Python's pickle library to safely load local FAISS index files from disk.
     )
-    retriever = vector_store.as_retriever(search_kwargs={"k": 8})
 
     llm = ChatOpenAI(
         model="gpt-4o",
-        temperature=0.4,
+        temperature=0,  # Zero temperature for strict, deterministic answers
         openai_api_key=os.getenv("OPENAI_API_KEY"),
     )
 
@@ -59,7 +61,7 @@ def load_qa_chain():
         ("human", "{question}"),
     ])
 
-    return retriever, llm, prompt
+    return vector_store, llm, prompt
 
 # Cache chain at module level — avoids reloading FAISS on every request
 _chain_cache = None
@@ -80,20 +82,27 @@ def get_cached_chain():
 
 
 def ask(question: str, chain) -> str:
-    """Retrieve relevant docs, then ask the LLM."""
-    retriever, llm, prompt = chain
+    """Retrieve relevant docs with score filtering, then ask the LLM."""
+    vector_store, llm, prompt = chain
 
-    # Step 1: Retrieve relevant chunks
-    docs = retriever.invoke(question)
+    # Step 1: Retrieve top-k chunks with similarity scores (FAISS L2 distance)
+    docs_with_scores = vector_store.similarity_search_with_score(question, k=8)
+
+    # Step 2: Filter out chunks that are too dissimilar (high L2 distance = irrelevant)
+    relevant_docs = [
+        doc for doc, score in docs_with_scores
+        if score <= SIMILARITY_THRESHOLD
+    ]
+
+    if not relevant_docs:
+        return "The answer to this question is not available in the provided document."
+
     context = "\n\n".join(
         f"=== PAGE {doc.metadata.get('page', '?')} ===\n{doc.page_content}"
-        for doc in docs
+        for doc in relevant_docs
     )
 
-    if not context.strip():
-        return "⚠️ No relevant content found in the document for this question."
-
-    # Step 2: Ask LLM with context
+    # Step 3: Ask LLM strictly using the filtered context
     messages = prompt.format_messages(context=context, question=question)
     response = llm.invoke(messages)
     return response.content
