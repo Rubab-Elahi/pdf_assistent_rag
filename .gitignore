@@ -3,4 +3,4 @@
 __pycache__/
 *.pdf
 backend/__pycache__/
-frontend/__pycache__/
+frontend/__pycache__/backend/faiss_index/
