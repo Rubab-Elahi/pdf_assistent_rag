@@ -5,11 +5,15 @@ main.py - FastAPI entry point for the RAG Bot (Vercel deployment)
 import os
 import shutil
 import tempfile
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from rag import load_qa_chain, ask, get_cached_chain, clear_chain_cache
+from rag import load_qa_chain, ask, ask_stream, get_cached_chain, clear_chain_cache
 from ingest import ingest_pdf
+
+load_dotenv()
 
 app = FastAPI(title="RAG PDF Assistant API")
 
@@ -25,6 +29,8 @@ app.add_middleware(
 
 class QueryRequest(BaseModel):
     question: str
+    stream: bool = False
+    model: str = "gpt-4o"
 
 
 @app.get("/")
@@ -38,7 +44,13 @@ def query_rag(req: QueryRequest):
         raise HTTPException(status_code=400, detail="Question cannot be empty.")
 
     try:
-        chain = get_cached_chain()
+        chain = get_cached_chain(model=req.model)
+        if req.stream:
+            def generate():
+                for chunk in ask_stream(req.question, chain):
+                    yield chunk
+            return StreamingResponse(generate(), media_type="text/plain")
+
         answer = ask(req.question, chain)
         return {"answer": answer}
     except FileNotFoundError:
@@ -48,6 +60,31 @@ def query_rag(req: QueryRequest):
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/ask/stream")
+def query_rag_stream(req: QueryRequest):
+    if not req.question.strip():
+        raise HTTPException(status_code=400, detail="Question cannot be empty.")
+
+    try:
+        chain = get_cached_chain(model=req.model)
+    except FileNotFoundError:
+        raise HTTPException(
+            status_code=500,
+            detail="FAISS index not found. Ensure 'faiss_index/' is included in the deployment."
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    def generate():
+        try:
+            for chunk in ask_stream(req.question, chain):
+                yield chunk
+        except Exception as e:
+            yield f"\n\n[Error during generation: {str(e)}]"
+
+    return StreamingResponse(generate(), media_type="text/plain")
 
 
 @app.post("/ingest")

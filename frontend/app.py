@@ -1,4 +1,5 @@
 import os
+import time
 import requests
 import streamlit as st
 
@@ -10,6 +11,7 @@ st.set_page_config(
     page_title="RAG PDF Assistant",
     page_icon="📚",
     layout="wide",
+    initial_sidebar_state="expanded",
 )
 
 # Initialize Session States
@@ -21,14 +23,63 @@ if "ingest_status" not in st.session_state:
         "💡 Select or upload a PDF, then click **Ingest & Process PDF**."
     )
 
+if "pdf_list" not in st.session_state:
+    st.session_state.pdf_list = []
+
+if "pending_query" not in st.session_state:
+    st.session_state.pending_query = None
+
 
 # --- Helper API Functions ---
-def query_rag_backend(question):
+def stream_rag_backend(question, model="gpt-4o"):
+    """Stream response from backend /ask/stream endpoint, falling back to /ask if 404."""
+    try:
+        res = requests.post(
+            f"{BACKEND_URL}/ask/stream",
+            json={"question": question, "model": model},
+            stream=True,
+            timeout=60,
+        )
+        if res.status_code == 200:
+            for chunk in res.iter_content(chunk_size=None, decode_unicode=True):
+                if chunk:
+                    yield chunk
+            return
+
+        # Fallback to /ask if /ask/stream is not deployed yet on Vercel
+        if res.status_code == 404:
+            fallback_res = requests.post(
+                f"{BACKEND_URL}/ask",
+                json={"question": question, "model": model},
+                timeout=30,
+            )
+            if fallback_res.status_code == 200:
+                answer = fallback_res.json().get("answer", "⚠️ No answer returned from API.")
+                words = answer.split(" ")
+                for i, word in enumerate(words):
+                    yield word + (" " if i < len(words) - 1 else "")
+                    time.sleep(0.015)
+                return
+
+        try:
+            detail = res.json().get("detail", res.text)
+        except Exception:
+            detail = res.text
+        yield f"❌ **Backend Error (HTTP {res.status_code}):** {detail}"
+    except requests.exceptions.Timeout:
+        yield "⏱️ **Request timed out.** Please try again."
+    except requests.exceptions.ConnectionError:
+        yield f"🔌 **Could not reach backend:** `{BACKEND_URL}`"
+    except Exception as e:
+        yield f"❌ **Error:** {str(e)}"
+
+
+def query_rag_backend(question, model="gpt-4o"):
     """Query the backend /ask endpoint."""
     try:
         res = requests.post(
             f"{BACKEND_URL}/ask",
-            json={"question": question},
+            json={"question": question, "model": model},
             timeout=30,
         )
         if res.status_code == 200:
@@ -40,7 +91,6 @@ def query_rag_backend(question):
         return f"🔌 **Could not reach backend:** `{BACKEND_URL}`"
     except Exception as e:
         return f"❌ **Error:** {str(e)}"
-
 
 
 def fetch_pdf_list():
@@ -73,90 +123,336 @@ def send_pdf_for_ingestion(uploaded_file):
         return False, f"❌ **Error:** {str(e)}"
 
 
-# --- Custom CSS & Header ---
+# --- Clean Subtle Custom CSS ---
 st.markdown(
     """
     <style>
-    .header-box { text-align: center; margin-bottom: 25px; }
-    .header-box h1 { font-size: 2.2rem; font-weight: 700; color: #1E293B; margin-bottom: 6px; }
-    .header-box p { font-size: 1.05rem; color: #64748B; }
+    @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap');
+
+    html, body, [class*="css"] {
+        font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+    }
+
+    /* Clean container padding */
+    .block-container {
+        padding-top: 1.5rem;
+        padding-bottom: 2.5rem;
+        max-width: 1100px;
+    }
+
+    /* Subtle App Header Bar */
+    .app-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 14px 20px;
+        background: #FFFFFF;
+        border: 1px solid #E2E8F0;
+        border-radius: 12px;
+        margin-bottom: 1.5rem;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.02);
+    }
+    .app-brand {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+    }
+    .app-logo {
+        font-size: 1.5rem;
+        background: #F1F5F9;
+        border: 1px solid #E2E8F0;
+        border-radius: 8px;
+        padding: 4px 8px;
+        line-height: 1;
+    }
+    .app-title {
+        font-size: 1.25rem;
+        font-weight: 700;
+        color: #0F172A;
+        margin: 0;
+        letter-spacing: -0.01em;
+    }
+    .app-subtitle {
+        font-size: 0.82rem;
+        color: #64748B;
+        margin: 0;
+    }
+    .model-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        background: #EEF2FF;
+        color: #4338CA;
+        border: 1px solid #C7D2FE;
+        border-radius: 9999px;
+        padding: 4px 12px;
+        font-size: 0.8rem;
+        font-weight: 600;
+        white-space: nowrap;
+        flex-shrink: 0;
+    }
+    .online-indicator {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background-color: #10B981;
+        display: inline-block;
+    }
+
+    /* Sidebar Clean Styling */
+    section[data-testid="stSidebar"] {
+        background-color: #FAFAFA;
+        border-right: 1px solid #E2E8F0;
+    }
+    section[data-testid="stSidebar"] .block-container {
+        padding-top: 1.5rem;
+        padding-left: 1rem;
+        padding-right: 1rem;
+    }
+    .sidebar-section-title {
+        font-size: 0.8rem;
+        font-weight: 700;
+        color: #475569;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        margin-top: 1rem;
+        margin-bottom: 0.5rem;
+    }
+
+    /* Empty state card */
+    .empty-state {
+        text-align: center;
+        padding: 35px 20px;
+        background: #FFFFFF;
+        border: 1px dashed #CBD5E1;
+        border-radius: 12px;
+        margin-top: 10px;
+        margin-bottom: 20px;
+    }
+    .empty-state-icon {
+        font-size: 2.2rem;
+        margin-bottom: 8px;
+    }
+    .empty-state-title {
+        font-size: 1.1rem;
+        font-weight: 600;
+        color: #1E293B;
+        margin-bottom: 4px;
+    }
+    .empty-state-subtitle {
+        font-size: 0.86rem;
+        color: #64748B;
+        max-width: 480px;
+        margin: 0 auto;
+    }
+
+    /* Micro timing badge */
+    .timing-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        font-size: 0.74rem;
+        color: #64748B;
+        background: #F8FAFC;
+        border: 1px solid #E2E8F0;
+        border-radius: 4px;
+        padding: 2px 7px;
+        margin-top: 4px;
+        font-weight: 500;
+    }
+
+    /* Live timer shown during generation in bottom-right corner */
+    .live-timer {
+        position: fixed;
+        bottom: 78px;
+        right: 20px;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 0.78rem;
+        font-weight: 600;
+        color: #4F46E5;
+        background: #EEF2FF;
+        border: 1px solid #C7D2FE;
+        border-radius: 9999px;
+        padding: 5px 14px;
+        z-index: 9999;
+        box-shadow: 0 2px 8px rgba(79, 70, 229, 0.12);
+        animation: pulse-timer 1s ease-in-out infinite alternate;
+    }
+    @keyframes pulse-timer {
+        from { opacity: 0.85; }
+        to   { opacity: 1; }
+    }
+
     </style>
     """,
     unsafe_allow_html=True,
 )
 
+# --- Sidebar: Document Management & Model Settings ---
+with st.sidebar:
+    st.markdown("<div class='sidebar-section-title'>⚙️ Model Configuration</div>", unsafe_allow_html=True)
+    model_options = ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"]
+    selected_model = st.selectbox(
+        "OpenAI Model",
+        options=model_options,
+        index=0,
+        help="Select which OpenAI LLM will generate responses.",
+        label_visibility="collapsed",
+    )
+
+    st.markdown("<div class='sidebar-section-title'>📄 Document Management</div>", unsafe_allow_html=True)
+
+    if not st.session_state.pdf_list:
+        st.session_state.pdf_list = fetch_pdf_list()
+
+    pdf_list = st.session_state.pdf_list
+    selected_pdf = st.selectbox(
+        "Existing Documents",
+        options=["None"] + pdf_list if pdf_list else ["No PDFs available"],
+        index=0,
+        help="Select a PDF already processed on the server.",
+    )
+
+    uploaded_file = st.file_uploader(
+        "Upload PDF",
+        type=["pdf"],
+        help="Upload a new PDF to extract and index into FAISS.",
+    )
+
+    if st.button("⚡ Ingest & Process PDF", use_container_width=True, type="primary"):
+        if uploaded_file is not None:
+            with st.spinner(f"Ingesting `{uploaded_file.name}`..."):
+                success, message = send_pdf_for_ingestion(uploaded_file)
+                st.session_state.ingest_status = message
+                if success:
+                    st.session_state.pdf_list = fetch_pdf_list()
+        else:
+            st.session_state.ingest_status = "⚠️ Please select or upload a PDF first."
+
+    st.info(st.session_state.ingest_status)
+
+    st.divider()
+
+    col_btn1, col_btn2 = st.columns(2)
+    with col_btn1:
+        if st.button("🔄 Refresh", use_container_width=True, help="Refresh document list"):
+            st.session_state.pdf_list = fetch_pdf_list()
+            st.rerun()
+    with col_btn2:
+        if st.button("🗑️ Clear", use_container_width=True, help="Clear chat history"):
+            st.session_state.messages = []
+            st.rerun()
+
+    st.caption(f"**Backend:** `{BACKEND_URL}`")
+
+
+# --- Main Workspace: Clean Header & Chat ---
 st.markdown(
-    """
-    <div class="header-box">
-        <h1>📚 AI RAG PDF Assistant</h1>
-        <p>Upload or select a PDF document, ingest it, and ask questions powered by OpenAI & FAISS</p>
+    f"""
+    <div class="app-header">
+        <div class="app-brand">
+            <span class="app-logo">📚</span>
+            <div>
+                <h1 class="app-title">RAG PDF Assistant</h1>
+                <p class="app-subtitle">Strictly grounded document Q&A powered by FAISS & OpenAI</p>
+            </div>
+        </div>
+        <div class="model-badge">
+            <span class="online-indicator"></span>
+            <span>{selected_model}</span>
+        </div>
     </div>
     """,
     unsafe_allow_html=True,
 )
 
-# --- Layout ---
-left_col, right_col = st.columns([1, 2], gap="large")
+# Chat Messages Container
+chat_container = st.container()
 
-# Left Column: Document Management
-with left_col:
-    st.subheader("📄 Document Selection")
+with chat_container:
+    if not st.session_state.messages:
+        st.markdown(
+            """
+            <div class="empty-state">
+                <div class="empty-state-icon">💬</div>
+                <div class="empty-state-title">Ask anything about your document</div>
+                <div class="empty-state-subtitle">
+                    Select or upload a PDF from the sidebar, then ask questions. Answers are strictly grounded in the document context with exact page citations.
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
-    if "pdf_list" not in st.session_state:
-        st.session_state.pdf_list = []
+        # Quick Starter Prompts
+        st.markdown("<div style='font-size:0.82rem; font-weight:600; color:#64748B; margin-bottom:6px;'>SUGGESTED QUESTIONS:</div>", unsafe_allow_html=True)
+        col_s1, col_s2, col_s3 = st.columns(3)
+        with col_s1:
+            if st.button("📄 Summarize PDF", use_container_width=True):
+                st.session_state.pending_query = "Please provide a comprehensive summary of this document."
+                st.rerun()
+        with col_s2:
+            if st.button("💡 Key Takeaways", use_container_width=True):
+                st.session_state.pending_query = "What are the main takeaways and key highlights in this document?"
+                st.rerun()
+        with col_s3:
+            if st.button("📌 Main Topics", use_container_width=True):
+                st.session_state.pending_query = "What are the core topics and sections covered in this document?"
+                st.rerun()
 
-    pdf_list = st.session_state.pdf_list
-    selected_pdf = st.selectbox(
-        "Select Existing PDF",
-        options=["None"] + pdf_list if pdf_list else ["No PDFs found"],
-        index=0,
-    )
+    for msg in st.session_state.messages:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+            if msg.get("role") == "assistant" and "elapsed_time" in msg:
+                st.markdown(
+                    f"<div class='timing-badge'>⚡ {msg.get('model', selected_model)} • ⏱️ {msg['elapsed_time']:.2f}s</div>",
+                    unsafe_allow_html=True,
+                )
 
-    uploaded_file = st.file_uploader("Or Upload New PDF", type=["pdf"])
+# Live timer placeholder — shown in bottom-right corner while model generates
+live_timer = st.empty()
 
-    if st.button("⚡ Ingest & Process PDF", use_container_width=True, type="primary"):
-        if uploaded_file is not None:
-            with st.spinner(f"Ingesting `{uploaded_file.name}` on backend..."):
-                success, message = send_pdf_for_ingestion(uploaded_file)
-                st.session_state.ingest_status = message
-        else:
-            st.session_state.ingest_status = "⚠️ Please upload a PDF file first."
+# Determine query from chat_input or a clicked suggestion
+active_query = st.session_state.pending_query
+if active_query:
+    st.session_state.pending_query = None
+else:
+    active_query = st.chat_input("Type your question about the PDF document...")
 
-    st.info(st.session_state.ingest_status)
-    st.caption(f"**Backend:** `{BACKEND_URL}`")
+def timed_stream(gen, timer_placeholder, start):
+    """Wrap a generator to update a live timer placeholder on every token."""
+    for chunk in gen:
+        elapsed = time.perf_counter() - start
+        timer_placeholder.markdown(
+            f"<div class='live-timer'>⏱️ {elapsed:.1f}s &nbsp; <span style='color:#94A3B8;font-weight:400;'>generating...</span></div>",
+            unsafe_allow_html=True,
+        )
+        yield chunk
 
-
-# Right Column: Chat Interface
-with right_col:
-    st.subheader("💬 Document Q&A Chat")
-
-    ctrl_col1, ctrl_col2 = st.columns([1, 1])
-    with ctrl_col1:
-        if st.button("🗑️ Clear Chat", use_container_width=True):
-            st.session_state.messages = []
-            st.rerun()
-    with ctrl_col2:
-        if st.button("🔄 Refresh PDF List", use_container_width=True):
-            st.session_state.pdf_list = fetch_pdf_list()
-            st.rerun()
-
-    chat_container = st.container(height=450)
-
+if active_query:
+    st.session_state.messages.append({"role": "user", "content": active_query})
     with chat_container:
-        for msg in st.session_state.messages:
-            with st.chat_message(msg["role"]):
-                st.markdown(msg["content"])
+        with st.chat_message("user"):
+            st.markdown(active_query)
 
-    if user_message := st.chat_input("Type your question about the PDF document..."):
-        st.session_state.messages.append({"role": "user", "content": user_message})
-        with chat_container:
-            with st.chat_message("user"):
-                st.markdown(user_message)
+        with st.chat_message("assistant"):
+            start_time = time.perf_counter()
+            bot_message = st.write_stream(
+                timed_stream(stream_rag_backend(active_query, model=selected_model), live_timer, start_time)
+            )
+            elapsed_time = time.perf_counter() - start_time
+            # Clear the live timer once complete
+            live_timer.empty()
+            st.markdown(
+                f"<div class='timing-badge'>⚡ {selected_model} • ⏱️ {elapsed_time:.2f}s</div>",
+                unsafe_allow_html=True,
+            )
 
-        with st.spinner("Thinking..."):
-            bot_message = query_rag_backend(user_message)
-
-        st.session_state.messages.append({"role": "assistant", "content": bot_message})
-        with chat_container:
-            with st.chat_message("assistant"):
-                st.markdown(bot_message)
+    st.session_state.messages.append({
+        "role": "assistant",
+        "content": bot_message,
+        "model": selected_model,
+        "elapsed_time": elapsed_time,
+    })

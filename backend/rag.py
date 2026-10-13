@@ -23,58 +23,86 @@ def get_vector_store_path():
 
 EMBED_MODEL = "text-embedding-3-small"
 
-SYSTEM_PROMPT = """You are a strict, grounded PDF question-answering assistant.
+SYSTEM_PROMPT = """You are a friendly, helpful, and strictly grounded RAG pdf Assistant. Your job is to assist users by answering their questions using the saved data of the currently ingested PDF in the database.
 
-RULES YOU MUST FOLLOW STRICTLY:
-1. You MUST answer the user's question using ONLY the facts and details directly stated in the Context Excerpts below.
-2. Read the Context Excerpts carefully. If the excerpts DO NOT contain the answer to the user's question, respond strictly with: "The answer to this question is not available in the provided document."
-3. You are FORBIDDEN from using any external knowledge, general world memory, training data, or outside assumptions.
-4. MANDATORY CITATIONS: Every piece of information you state MUST include its page number in bold, e.g., **[Page 5]**.
-5. Go straight to the answer without meta-introductions like "Based on the context...".
-6. End your response with a concise, relevant follow-up question based on the document content.
+Please follow these guidelines carefully:
+1. SEARCH THE SAVED DATA: Carefully examine all the Context Excerpts provided below from the currently ingested PDF in the database.
+2. WHEN THE ANSWER IS PRESENT:
+   - Provide a clear, polite, and user-friendly answer directly addressing the user's query.
+   - Base your answer strictly on the facts stated in the excerpts—never use outside knowledge, assumptions, or fabricated information.
+   - Always cite the source page number(s) in bold for the information you provide (e.g., **[Page 2]**, **[Page 5]**).
+3. WHEN THE ANSWER IS NOT PRESENT:
+   - If the requested information is not mentioned or cannot be found in the saved data, politely and clearly let the user know that the answer is not present in the currently ingested document (for example: "I reviewed the saved document data, but unfortunately, the answer to your question is not present in the currently ingested PDF. Please let me know if you would like help with any topics covered in the document!").
+   - Do NOT attempt to guess, extrapolate, or bring in external knowledge.
+4. TONE & FORMATTING:
+   - Maintain a warm, courteous, and professional tone.
+   - Use clean formatting (bullet points, clear paragraphs) to make your response easy and pleasant to read.
 
-Context Excerpts from the ingested document:
+Context Excerpts from the currently ingested PDF:
 {context}"""
 
 
-def load_qa_chain():
-    """Load vector store and LLM — returns (retriever, llm, prompt)."""
-    vector_store_path = get_vector_store_path()
-    embeddings = OpenAIEmbeddings(model=EMBED_MODEL)
-    vector_store = FAISS.load_local(
-        vector_store_path, embeddings, allow_dangerous_deserialization=True  # Allows Python's pickle library to safely load local FAISS index files from disk.
-    )
-    retriever = vector_store.as_retriever(search_kwargs={"k": 8})
-
-    llm = ChatOpenAI(
-        model="gpt-4o",
-        temperature=0,  # Zero temperature for strict, deterministic grounding
-        openai_api_key=os.getenv("OPENAI_API_KEY"),
-    )
-
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", SYSTEM_PROMPT),
-        ("human", "{question}"),
-    ])
-
-    return retriever, llm, prompt
-
-# Cache chain at module level — avoids reloading FAISS on every request
+# Module-level caches
+_retriever_cache = None
+_llms_cache = {}
+_prompt_cache = None
 _chain_cache = None
 
 
+def get_retriever():
+    """Load or return cached FAISS retriever."""
+    global _retriever_cache
+    if _retriever_cache is None:
+        vector_store_path = get_vector_store_path()
+        embeddings = OpenAIEmbeddings(model=EMBED_MODEL)
+        vector_store = FAISS.load_local(
+            vector_store_path, embeddings, allow_dangerous_deserialization=True  # Allows Python's pickle library to safely load local FAISS index files from disk.
+        )
+        _retriever_cache = vector_store.as_retriever(search_kwargs={"k": 8})
+    return _retriever_cache
+
+
+def get_prompt():
+    """Return cached prompt template."""
+    global _prompt_cache
+    if _prompt_cache is None:
+        _prompt_cache = ChatPromptTemplate.from_messages([
+            ("system", SYSTEM_PROMPT),
+            ("human", "{question}"),
+        ])
+    return _prompt_cache
+
+
+def get_llm(model: str = "gpt-4o"):
+    """Return cached ChatOpenAI instance for the requested model."""
+    if model not in _llms_cache:
+        _llms_cache[model] = ChatOpenAI(
+            model=model,
+            temperature=0,  # Zero temperature for strict, deterministic grounding
+            openai_api_key=os.getenv("OPENAI_API_KEY"),
+        )
+    return _llms_cache[model]
+
+
+def load_qa_chain(model: str = "gpt-4o"):
+    """Load vector store and LLM for specified model — returns (retriever, llm, prompt)."""
+    retriever = get_retriever()
+    llm = get_llm(model)
+    prompt = get_prompt()
+    return retriever, llm, prompt
+
+
 def clear_chain_cache():
-    """Clear the cached QA chain to force reloading FAISS index on next query."""
-    global _chain_cache
+    """Clear cached retriever and LLMs to force reloading FAISS index on next query."""
+    global _retriever_cache, _llms_cache, _chain_cache
+    _retriever_cache = None
+    _llms_cache.clear()
     _chain_cache = None
 
 
-def get_cached_chain():
-    """Return the cached QA chain, loading it once on first call."""
-    global _chain_cache
-    if _chain_cache is None:
-        _chain_cache = load_qa_chain()
-    return _chain_cache
+def get_cached_chain(model: str = "gpt-4o"):
+    """Return the QA chain for the specified model, using cached components."""
+    return load_qa_chain(model)
 
 
 def ask(question: str, chain) -> str:
@@ -85,7 +113,7 @@ def ask(question: str, chain) -> str:
     docs = retriever.invoke(question)
 
     if not docs:
-        return "The answer to this question is not available in the provided document."
+        return "I'm sorry, but the answer to your question is not present in the saved data of the currently ingested PDF."
 
     context = "\n\n".join(
         f"=== PAGE {doc.metadata.get('page', '?')} ===\n{doc.page_content}"
@@ -93,9 +121,36 @@ def ask(question: str, chain) -> str:
     )
 
     if not context.strip():
-        return "The answer to this question is not available in the provided document."
+        return "I'm sorry, but the answer to your question is not present in the saved data of the currently ingested PDF."
 
     # Step 2: Ask LLM strictly using context
     messages = prompt.format_messages(context=context, question=question)
     response = llm.invoke(messages)
     return response.content
+
+
+def ask_stream(question: str, chain):
+    """Retrieve top-k relevant docs, then stream LLM response tokens strictly using context."""
+    retriever, llm, prompt = chain
+
+    # Step 1: Retrieve top-k chunks
+    docs = retriever.invoke(question)
+
+    if not docs:
+        yield "I'm sorry, but the answer to your question is not present in the saved data of the currently ingested PDF."
+        return
+
+    context = "\n\n".join(
+        f"=== PAGE {doc.metadata.get('page', '?')} ===\n{doc.page_content}"
+        for doc in docs
+    )
+
+    if not context.strip():
+        yield "I'm sorry, but the answer to your question is not present in the saved data of the currently ingested PDF."
+        return
+
+    # Step 2: Stream tokens from LLM strictly using context
+    messages = prompt.format_messages(context=context, question=question)
+    for chunk in llm.stream(messages):
+        if chunk.content:
+            yield chunk.content
