@@ -4,3 +4,8 @@ __pycache__/
 *.pdf
 backend/__pycache__/
 frontend/__pycache__/backend/faiss_index/
+.env
+backend/.env
+backend/faiss_index/
+__pycache__/
+*.pyc

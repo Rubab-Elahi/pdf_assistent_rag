@@ -1,5 +1,6 @@
 import os
 import time
+import uuid
 import requests
 import streamlit as st
 
@@ -18,6 +19,9 @@ st.set_page_config(
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
+if "session_id" not in st.session_state:
+    st.session_state.session_id = str(uuid.uuid4())
+
 if "ingest_status" not in st.session_state:
     st.session_state.ingest_status = (
         "💡 Select or upload a PDF, then click **Ingest & Process PDF**."
@@ -33,10 +37,11 @@ if "pending_query" not in st.session_state:
 # --- Helper API Functions ---
 def stream_rag_backend(question, model="gpt-4o"):
     """Stream response from backend /ask/stream endpoint, falling back to /ask if 404."""
+    session_id = st.session_state.get("session_id", "default")
     try:
         res = requests.post(
             f"{BACKEND_URL}/ask/stream",
-            json={"question": question, "model": model},
+            json={"question": question, "model": model, "session_id": session_id},
             stream=True,
             timeout=60,
         )
@@ -50,7 +55,7 @@ def stream_rag_backend(question, model="gpt-4o"):
         if res.status_code == 404:
             fallback_res = requests.post(
                 f"{BACKEND_URL}/ask",
-                json={"question": question, "model": model},
+                json={"question": question, "model": model, "session_id": session_id},
                 timeout=30,
             )
             if fallback_res.status_code == 200:
@@ -76,10 +81,11 @@ def stream_rag_backend(question, model="gpt-4o"):
 
 def query_rag_backend(question, model="gpt-4o"):
     """Query the backend /ask endpoint."""
+    session_id = st.session_state.get("session_id", "default")
     try:
         res = requests.post(
             f"{BACKEND_URL}/ask",
-            json={"question": question, "model": model},
+            json={"question": question, "model": model, "session_id": session_id},
             timeout=30,
         )
         if res.status_code == 200:
@@ -342,7 +348,18 @@ with st.sidebar:
             st.rerun()
     with col_btn2:
         if st.button("🗑️ Clear", use_container_width=True, help="Clear chat history"):
+            # Clear in-memory messages
             st.session_state.messages = []
+            # Clear PostgreSQL history for this session
+            try:
+                requests.delete(
+                    f"{BACKEND_URL}/session/{st.session_state.session_id}",
+                    timeout=10,
+                )
+            except Exception:
+                pass
+            # Generate a fresh session_id for the next conversation
+            st.session_state.session_id = str(uuid.uuid4())
             st.rerun()
 
     st.caption(f"**Backend:** `{BACKEND_URL}`")

@@ -34,12 +34,16 @@ Please follow these guidelines carefully:
 3. WHEN THE ANSWER IS NOT PRESENT:
    - If the requested information is not mentioned or cannot be found in the saved data, politely and clearly let the user know that the answer is not present in the currently ingested document (for example: "I reviewed the saved document data, but unfortunately, the answer to your question is not present in the currently ingested PDF. Please let me know if you would like help with any topics covered in the document!").
    - Do NOT attempt to guess, extrapolate, or bring in external knowledge.
-4. TONE & FORMATTING:
+4. CONVERSATION HISTORY: You are also provided with the recent conversation history (if any). You MAY use it to understand follow-up questions, recall what you previously said, or maintain continuity. However, do NOT use history to bring in facts beyond what the PDF context provides.
+5. TONE & FORMATTING:
    - Maintain a warm, courteous, and professional tone.
    - Use clean formatting (bullet points, clear paragraphs) to make your response easy and pleasant to read.
 
 Context Excerpts from the currently ingested PDF:
-{context}"""
+{context}
+
+Recent Conversation History (current session):
+{history}"""
 
 
 # Module-level caches
@@ -63,14 +67,11 @@ def get_retriever():
 
 
 def get_prompt():
-    """Return cached prompt template."""
-    global _prompt_cache
-    if _prompt_cache is None:
-        _prompt_cache = ChatPromptTemplate.from_messages([
-            ("system", SYSTEM_PROMPT),
-            ("human", "{question}"),
-        ])
-    return _prompt_cache
+    """Return prompt template (not cached — history varies per call)."""
+    return ChatPromptTemplate.from_messages([
+        ("system", SYSTEM_PROMPT),
+        ("human", "{question}"),
+    ])
 
 
 def get_llm(model: str = "gpt-4o"):
@@ -105,9 +106,21 @@ def get_cached_chain(model: str = "gpt-4o"):
     return load_qa_chain(model)
 
 
-def ask(question: str, chain) -> str:
-    """Retrieve top-k relevant docs, then ask the LLM strictly using context."""
+def _format_history(history: list[dict]) -> str:
+    """Format a list of {role, content} dicts into a readable conversation string."""
+    if not history:
+        return "(No previous conversation in this session.)"
+    lines = []
+    for turn in history:
+        role_label = "Human" if turn["role"] == "user" else "Assistant"
+        lines.append(f"{role_label}: {turn['content']}")
+    return "\n".join(lines)
+
+
+def ask(question: str, chain, history: list[dict] = None) -> str:
+    """Retrieve top-k relevant docs, then ask the LLM strictly using context + session history."""
     retriever, llm, prompt = chain
+    history = history or []
 
     # Step 1: Retrieve top-k chunks
     docs = retriever.invoke(question)
@@ -123,15 +136,17 @@ def ask(question: str, chain) -> str:
     if not context.strip():
         return "I'm sorry, but the answer to your question is not present in the saved data of the currently ingested PDF."
 
-    # Step 2: Ask LLM strictly using context
-    messages = prompt.format_messages(context=context, question=question)
+    # Step 2: Ask LLM with context + history
+    history_text = _format_history(history)
+    messages = prompt.format_messages(context=context, history=history_text, question=question)
     response = llm.invoke(messages)
     return response.content
 
 
-def ask_stream(question: str, chain):
-    """Retrieve top-k relevant docs, then stream LLM response tokens strictly using context."""
+def ask_stream(question: str, chain, history: list[dict] = None):
+    """Retrieve top-k relevant docs, then stream LLM response tokens using context + session history."""
     retriever, llm, prompt = chain
+    history = history or []
 
     # Step 1: Retrieve top-k chunks
     docs = retriever.invoke(question)
@@ -149,8 +164,9 @@ def ask_stream(question: str, chain):
         yield "I'm sorry, but the answer to your question is not present in the saved data of the currently ingested PDF."
         return
 
-    # Step 2: Stream tokens from LLM strictly using context
-    messages = prompt.format_messages(context=context, question=question)
+    # Step 2: Stream tokens from LLM with context + history
+    history_text = _format_history(history)
+    messages = prompt.format_messages(context=context, history=history_text, question=question)
     for chunk in llm.stream(messages):
         if chunk.content:
             yield chunk.content
