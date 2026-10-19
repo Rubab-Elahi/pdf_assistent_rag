@@ -62,7 +62,10 @@ def get_retriever():
         vector_store = FAISS.load_local(
             vector_store_path, embeddings, allow_dangerous_deserialization=True  # Allows Python's pickle library to safely load local FAISS index files from disk.
         )
-        _retriever_cache = vector_store.as_retriever(search_kwargs={"k": 8})
+        _retriever_cache = vector_store.as_retriever(
+            search_type="mmr",
+            search_kwargs={"k": 8, "fetch_k": 20, "lambda_mult": 0.7}
+        )
     return _retriever_cache
 
 
