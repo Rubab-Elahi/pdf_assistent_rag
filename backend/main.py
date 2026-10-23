@@ -41,6 +41,7 @@ class QueryRequest(BaseModel):
     question: str
     stream: bool = False
     model: str = "gpt-4o"
+    temperature: float = 0.0      # 0.0 = deterministic, 1.0 = creative
     session_id: str = "default"   # UUID sent by the frontend per browser session
 
 
@@ -55,7 +56,7 @@ def query_rag(req: QueryRequest):
         raise HTTPException(status_code=400, detail="Question cannot be empty.")
 
     try:
-        chain = get_cached_chain(model=req.model)
+        chain = get_cached_chain(model=req.model, temperature=req.temperature)
 
         # Load recent history for this session
         history = get_history(req.session_id, limit=10)
@@ -94,7 +95,7 @@ def query_rag_stream(req: QueryRequest):
         raise HTTPException(status_code=400, detail="Question cannot be empty.")
 
     try:
-        chain = get_cached_chain(model=req.model)
+        chain = get_cached_chain(model=req.model, temperature=req.temperature)
     except FileNotFoundError:
         raise HTTPException(
             status_code=500,

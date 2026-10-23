@@ -77,21 +77,22 @@ def get_prompt():
     ])
 
 
-def get_llm(model: str = "gpt-4o"):
-    """Return cached ChatOpenAI instance for the requested model."""
-    if model not in _llms_cache:
-        _llms_cache[model] = ChatOpenAI(
+def get_llm(model: str = "gpt-4o", temperature: float = 0.0):
+    """Return cached ChatOpenAI instance for the requested model + temperature combo."""
+    cache_key = f"{model}__temp{temperature}"
+    if cache_key not in _llms_cache:
+        _llms_cache[cache_key] = ChatOpenAI(
             model=model,
-            temperature=0,  # Zero temperature for strict, deterministic grounding
+            temperature=temperature,
             openai_api_key=os.getenv("OPENAI_API_KEY"),
         )
-    return _llms_cache[model]
+    return _llms_cache[cache_key]
 
 
-def load_qa_chain(model: str = "gpt-4o"):
-    """Load vector store and LLM for specified model — returns (retriever, llm, prompt)."""
+def load_qa_chain(model: str = "gpt-4o", temperature: float = 0.0):
+    """Load vector store and LLM for specified model/temperature — returns (retriever, llm, prompt)."""
     retriever = get_retriever()
-    llm = get_llm(model)
+    llm = get_llm(model, temperature)
     prompt = get_prompt()
     return retriever, llm, prompt
 
@@ -104,9 +105,9 @@ def clear_chain_cache():
     _chain_cache = None
 
 
-def get_cached_chain(model: str = "gpt-4o"):
-    """Return the QA chain for the specified model, using cached components."""
-    return load_qa_chain(model)
+def get_cached_chain(model: str = "gpt-4o", temperature: float = 0.0):
+    """Return the QA chain for the specified model/temperature, using cached components."""
+    return load_qa_chain(model, temperature)
 
 
 def _format_history(history: list[dict]) -> str:

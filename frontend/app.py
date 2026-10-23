@@ -33,15 +33,18 @@ if "pdf_list" not in st.session_state:
 if "pending_query" not in st.session_state:
     st.session_state.pending_query = None
 
+if "temperature" not in st.session_state:
+    st.session_state.temperature = 0.0
+
 
 # --- Helper API Functions ---
-def stream_rag_backend(question, model="gpt-4o"):
+def stream_rag_backend(question, model="gpt-4o", temperature=0.0):
     """Stream response from backend /ask/stream endpoint, falling back to /ask if 404."""
     session_id = st.session_state.get("session_id", "default")
     try:
         res = requests.post(
             f"{BACKEND_URL}/ask/stream",
-            json={"question": question, "model": model, "session_id": session_id},
+            json={"question": question, "model": model, "temperature": temperature, "session_id": session_id},
             stream=True,
             timeout=60,
         )
@@ -55,7 +58,7 @@ def stream_rag_backend(question, model="gpt-4o"):
         if res.status_code == 404:
             fallback_res = requests.post(
                 f"{BACKEND_URL}/ask",
-                json={"question": question, "model": model, "session_id": session_id},
+                json={"question": question, "model": model, "temperature": temperature, "session_id": session_id},
                 timeout=30,
             )
             if fallback_res.status_code == 200:
@@ -79,13 +82,13 @@ def stream_rag_backend(question, model="gpt-4o"):
         yield f"❌ **Error:** {str(e)}"
 
 
-def query_rag_backend(question, model="gpt-4o"):
+def query_rag_backend(question, model="gpt-4o", temperature=0.0):
     """Query the backend /ask endpoint."""
     session_id = st.session_state.get("session_id", "default")
     try:
         res = requests.post(
             f"{BACKEND_URL}/ask",
-            json={"question": question, "model": model, "session_id": session_id},
+            json={"question": question, "model": model, "temperature": temperature, "session_id": session_id},
             timeout=30,
         )
         if res.status_code == 200:
@@ -308,6 +311,26 @@ with st.sidebar:
         label_visibility="collapsed",
     )
 
+    selected_temperature = st.slider(
+        "Temperature",
+        min_value=0.0,
+        max_value=1.0,
+        value=st.session_state.temperature,
+        step=0.1,
+        help="Controls response creativity. 0.0 = strict & deterministic (best for RAG). 1.0 = more creative & varied.",
+    )
+    st.session_state.temperature = selected_temperature
+
+    # Temperature label hint
+    if selected_temperature == 0.0:
+        st.caption("🎯 **Strict mode** — deterministic, best for RAG")
+    elif selected_temperature <= 0.3:
+        st.caption("✅ **Low** — mostly consistent answers")
+    elif selected_temperature <= 0.6:
+        st.caption("⚖️ **Balanced** — some variation in phrasing")
+    else:
+        st.caption("🎨 **Creative** — more varied, may drift from PDF")
+
     st.markdown("<div class='sidebar-section-title'>📄 Document Management</div>", unsafe_allow_html=True)
 
     if not st.session_state.pdf_list:
@@ -378,7 +401,7 @@ st.markdown(
         </div>
         <div class="model-badge">
             <span class="online-indicator"></span>
-            <span>{selected_model}</span>
+            <span>{selected_model} &nbsp;|&nbsp; 🌡️ {selected_temperature}</span>
         </div>
     </div>
     """,
@@ -423,8 +446,9 @@ with chat_container:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
             if msg.get("role") == "assistant" and "elapsed_time" in msg:
+                temp_val = msg.get("temperature", 0.0)
                 st.markdown(
-                    f"<div class='timing-badge'>⚡ {msg.get('model', selected_model)} • ⏱️ {msg['elapsed_time']:.2f}s</div>",
+                    f"<div class='timing-badge'>⚡ {msg.get('model', selected_model)} &nbsp;|&nbsp; 🌡️ {temp_val} &nbsp;|&nbsp; ⏱️ {msg['elapsed_time']:.2f}s</div>",
                     unsafe_allow_html=True,
                 )
 
@@ -457,13 +481,13 @@ if active_query:
         with st.chat_message("assistant"):
             start_time = time.perf_counter()
             bot_message = st.write_stream(
-                timed_stream(stream_rag_backend(active_query, model=selected_model), live_timer, start_time)
+                timed_stream(stream_rag_backend(active_query, model=selected_model, temperature=selected_temperature), live_timer, start_time)
             )
             elapsed_time = time.perf_counter() - start_time
             # Clear the live timer once complete
             live_timer.empty()
             st.markdown(
-                f"<div class='timing-badge'>⚡ {selected_model} • ⏱️ {elapsed_time:.2f}s</div>",
+                f"<div class='timing-badge'>⚡ {selected_model} &nbsp;|&nbsp; 🌡️ {selected_temperature} &nbsp;|&nbsp; ⏱️ {elapsed_time:.2f}s</div>",
                 unsafe_allow_html=True,
             )
 
@@ -471,5 +495,6 @@ if active_query:
         "role": "assistant",
         "content": bot_message,
         "model": selected_model,
+        "temperature": selected_temperature,
         "elapsed_time": elapsed_time,
     })
